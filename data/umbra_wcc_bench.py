@@ -152,11 +152,16 @@ def run_wcc(con, max_iters=100):
     for _ in range(max_iters):
         iters += 1
         execute(con, "DROP TABLE IF EXISTS updates_t")
+        # Edges are directed but WCC ignores direction, so labels flow both ways.
         execute(con, """
             CREATE TABLE updates_t AS
-            SELECT e.src AS node_id, MIN(l.label) AS new_label
-            FROM edges e JOIN labels l ON e.dest = l.node_id
-            GROUP BY e.src
+            SELECT node_id, MIN(label) AS new_label
+            FROM (
+              SELECT e.src AS node_id, l.label FROM edges e JOIN labels l ON e.dest = l.node_id
+              UNION ALL
+              SELECT e.dest AS node_id, l.label FROM edges e JOIN labels l ON e.src = l.node_id
+            ) AS nbr
+            GROUP BY node_id
         """)
         execute(con, "DROP TABLE IF EXISTS labels_next")
         execute(con, """
@@ -180,6 +185,16 @@ def run_wcc(con, max_iters=100):
     return time.monotonic() - t0, iters, components or 0
 
 
+def count_cut_edges(con):
+    """Edges whose endpoints ended up with different labels (0 means the labels are the WCCs)."""
+    return execute_scalar(con, """
+        SELECT count(*) FROM edges e
+        JOIN labels a ON e.src = a.node_id
+        JOIN labels b ON e.dest = b.node_id
+        WHERE a.label != b.label
+    """) or 0
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--scale", required=True, choices=sorted(SCALES.keys()))
@@ -190,6 +205,8 @@ def main():
     p.add_argument("--password", default="postgres")
     p.add_argument("--database", default="postgres")
     p.add_argument("--output", default="umbra_results.jsonl")
+    p.add_argument("--no-verify", dest="verify", action="store_false",
+                   help="skip the post-run check that no edge joins two labels")
     args = p.parse_args()
 
     nv, ne = SCALES[args.scale]
@@ -205,6 +222,10 @@ def main():
     print("[umbra_wcc_bench] running WCC...", flush=True)
     t_wcc, iters, comps = run_wcc(c)
     print(f"[umbra_wcc_bench] WCC: {t_wcc:.1f}s, {iters} iters, {comps:,} comps", flush=True)
+    cut = None
+    if args.verify:
+        cut = count_cut_edges(c)  # outside the timed region
+        print(f"[umbra_wcc_bench] verify: {cut:,} edges join different labels", flush=True)
 
     result = {
         "engine": "umbra",
@@ -217,6 +238,7 @@ def main():
         "wcc_seconds": round(t_wcc, 3),
         "wcc_iterations": iters,
         "components": comps,
+        "cut_edges": cut,
     }
     with open(args.output, "a") as f:
         f.write(json.dumps(result) + "\n")

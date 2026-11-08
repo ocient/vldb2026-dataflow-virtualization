@@ -68,11 +68,16 @@ def run_wcc(con, max_iters: int = 100) -> tuple[float, int, int]:
     iters = 0
     for i in range(max_iters):
         iters += 1
+        # Edges are directed but WCC ignores direction, so labels flow both ways.
         con.execute("""
             CREATE OR REPLACE TABLE updates AS
-            SELECT e.src AS node_id, MIN(l.label) AS new_label
-            FROM edges e JOIN labels l ON e.dest = l.node_id
-            GROUP BY e.src
+            SELECT node_id, MIN(label) AS new_label
+            FROM (
+              SELECT e.src AS node_id, l.label FROM edges e JOIN labels l ON e.dest = l.node_id
+              UNION ALL
+              SELECT e.dest AS node_id, l.label FROM edges e JOIN labels l ON e.src = l.node_id
+            ) AS nbr
+            GROUP BY node_id
         """)
         con.execute("""
             CREATE OR REPLACE TABLE labels_next AS
@@ -95,6 +100,18 @@ def run_wcc(con, max_iters: int = 100) -> tuple[float, int, int]:
     return time.monotonic() - t0, iters, components
 
 
+def count_cut_edges(con) -> int:
+    """Edges whose endpoints ended up with different labels. 0 means every label
+    class is closed under the edge relation, i.e. the labels are the weakly
+    connected components (labels are member ids, so components never share one)."""
+    return con.execute("""
+        SELECT count(*) FROM edges e
+        JOIN labels a ON e.src = a.node_id
+        JOIN labels b ON e.dest = b.node_id
+        WHERE a.label != b.label
+    """).fetchone()[0]
+
+
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--scale", required=True, choices=sorted(SCALES.keys()))
@@ -103,6 +120,8 @@ def main() -> int:
     p.add_argument("--threads", type=int, default=os.cpu_count() or 32)
     p.add_argument("--mem-gb", type=int, default=200)
     p.add_argument("--output", default="duckdb_results.jsonl")
+    p.add_argument("--no-verify", dest="verify", action="store_false",
+                   help="skip the post-run check that no edge joins two labels")
     args = p.parse_args()
 
     nv, ne = SCALES[args.scale]
@@ -118,6 +137,10 @@ def main() -> int:
     print(f"[duckdb_wcc_bench] running WCC...", flush=True)
     t_wcc, iters, comps = run_wcc(con)
     print(f"[duckdb_wcc_bench] WCC: {t_wcc:.1f}s, {iters} iterations, {comps:,} components", flush=True)
+    cut = None
+    if args.verify:
+        cut = count_cut_edges(con)  # outside the timed region
+        print(f"[duckdb_wcc_bench] verify: {cut:,} edges join different labels", flush=True)
 
     result = {
         "engine": "duckdb",
@@ -133,6 +156,7 @@ def main() -> int:
         "wcc_seconds": round(t_wcc, 3),
         "wcc_iterations": iters,
         "components": comps,
+        "cut_edges": cut,
     }
     with open(args.output, "a") as f:
         f.write(json.dumps(result) + "\n")

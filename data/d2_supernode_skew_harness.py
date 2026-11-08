@@ -29,11 +29,17 @@ BEGIN DATAFLOW
 
   WHILE (@changes > 0) DO
     DROP TABLE IF EXISTS #LabelsNew;
+    -- labels flow along both edge directions (edges are directed, WCC is not)
     CREATE TABLE #Updates AS
-      SELECT e.srcid AS node_id, MIN(l.label) AS new_label
-      FROM {SCALE}.bench_edges e
-      JOIN #Labels l ON e.destid = l.node_id
-      GROUP BY e.srcid;
+      SELECT node_id, MIN(label) AS new_label
+      FROM (
+        SELECT e.srcid AS node_id, l.label
+        FROM {SCALE}.bench_edges e JOIN #Labels l ON e.destid = l.node_id
+        UNION ALL
+        SELECT e.destid AS node_id, l.label
+        FROM {SCALE}.bench_edges e JOIN #Labels l ON e.srcid = l.node_id
+      ) AS nbr
+      GROUP BY node_id;
 
     SET @changes = (
       SELECT count(*) FROM #Updates u

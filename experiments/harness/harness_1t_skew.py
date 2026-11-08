@@ -50,23 +50,30 @@ BEGIN DATAFLOW
     SELECT id AS node_id, id AS label FROM wcc1t.bench_vertices;
 
   WHILE (@changes > 0) DO
+    -- labels flow along both edge directions (edges are directed, WCC is not)
     CREATE OR REPLACE TABLE #Updates AS
-      SELECT e.src AS node_id, MIN(l.label) AS new_label
-      FROM wcc1t.bench_edges e
-      JOIN #Labels l ON e.dest = l.node_id
-      GROUP BY e.src;
+      SELECT node_id, MIN(label) AS new_label
+      FROM (
+        SELECT e.src AS node_id, l.label
+        FROM wcc1t.bench_edges e JOIN #Labels l ON e.dest = l.node_id
+        UNION ALL
+        SELECT e.dest AS node_id, l.label
+        FROM wcc1t.bench_edges e JOIN #Labels l ON e.src = l.node_id
+      ) AS nbr
+      GROUP BY node_id;
+
+    -- compare with the previous round's labels before replacing them
+    SET @changes = (
+      SELECT count(*) FROM #Updates u
+      JOIN #Labels l ON u.node_id = l.node_id
+      WHERE u.new_label < l.label
+    );
 
     CREATE OR REPLACE TABLE #Labels AS
       SELECT l.node_id,
              LEAST(COALESCE(u.new_label, l.label), l.label) AS label
       FROM #Labels l
       LEFT JOIN #Updates u ON l.node_id = u.node_id;
-
-    SET @changes = (
-      SELECT count(*) FROM #Updates u
-      JOIN #Labels l ON u.node_id = l.node_id
-      WHERE u.new_label < l.label
-    );
 
     DROP TABLE #Updates;
   END WHILE;

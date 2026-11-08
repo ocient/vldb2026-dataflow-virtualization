@@ -46,7 +46,16 @@ python3 umbra_wcc_bench.py --scale 1b
 ```
 
 Each harness writes one JSONL line per run to `<engine>_results.jsonl`
-with the WCC wall time, iteration count, and component count. Both
+with the WCC wall time, iteration count, and component count.
+
+The generated edges are directed and WCC ignores direction, so both
+harnesses (and `../dataflows/wcc.sql`) propagate labels along both
+directions of every edge. After the timed run each harness counts the
+edges whose endpoints ended up with different labels (`cut_edges` in the
+JSONL line; 0 means the labels are the weakly connected components). Pass
+`--no-verify` to skip that check. `../tests/test_wcc.py` runs both harnesses
+and the dataflow listing against small graphs and scipy
+(`pip install duckdb numpy scipy pytest && pytest tests/`). Both
 harnesses accept `--scale {100m, 1b, 10b}` and pass through `--alpha`,
 `--host`, etc.
 
